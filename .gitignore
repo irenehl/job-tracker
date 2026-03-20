@@ -10,3 +10,9 @@
 
 node_modules
 
+# Generated resume bundles (keep folder with .gitkeep)
+output/*
+!output/.gitkeep
+
+resume/master-profile.md
+
