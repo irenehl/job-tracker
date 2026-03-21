@@ -1,8 +1,40 @@
 # Job tracker
 
-A small CLI that pastes a job posting, uses an LLM to extract **position**, **company**, **industry**, **notes**, and **interview study themes**, then optionally saves a row to a **Notion** database. It can also generate an **ATS-oriented tailored resume** (Markdown + `.docx`) from your **master profile** and the same job description.
+A small CLI that pastes a job posting, uses an LLM to extract **position**, **company**, **industry**, **notes**, and **interview study themes**, then optionally saves a row to a **Notion** database. It can also generate an **ATS-oriented tailored resume** (Markdown + `.docx`) from your **[resume/master-profile.md](resume/master-profile.md)** and the same job description. Both Notion saving and resume generation are optional—you can skip either and still use the other.
 
 CV quality standards and the validation rubric live in **[docs/cv-best-practices.md](docs/cv-best-practices.md)** and **[docs/cv-rubric.md](docs/cv-rubric.md)**. For manual regression checks, see **[docs/evaluation-sample-jobs.md](docs/evaluation-sample-jobs.md)**. To capture missing profile facts systematically, see **[docs/profile-data-checklist.md](docs/profile-data-checklist.md)**.
+
+## Table of contents
+
+- [Quick start](#quick-start)
+- [Prerequisites](#prerequisites)
+- [Install](#install)
+- [Getting your Notion API key and database](#getting-your-notion-api-key-and-database)
+- [Required database properties](#required-database-properties)
+- [Configuration](#configuration)
+- [Master profile (for tailored resumes)](#master-profile-for-tailored-resumes)
+- [Usage](#usage)
+- [Tips](#tips)
+- [Troubleshooting](#troubleshooting)
+
+## Quick start
+
+1. **Clone** the repo and `cd` into it.
+2. **Install**: `npm install` (run from the repo root so `.env.local` is found).
+3. **Configure env**: `cp .env.example .env.local` and set the required keys. If you omit `LLM_PROVIDER`, the app defaults to `anthropic`; `.env.example` may show `openai` as an explicit template—either works.
+4. **Notion** (optional if you only want resumes): create a database, add the [required properties](#required-database-properties), create an integration, share the database with it, and put `NOTION_API_KEY` and `NOTION_DATABASE_ID` in `.env.local`. See [Getting your Notion API key and database](#getting-your-notion-api-key-and-database).
+5. **Master profile** (for tailored resumes): copy `resume/master-profile.example.md` → `resume/master-profile.md` and fill in your real history.
+6. **Run**: `pbpaste | node track-job.js` (macOS clipboard) or `node track-job.js "job text here"` or `cat job.txt | node track-job.js`.
+
+## Repository layout
+
+| Path | Purpose |
+|------|---------|
+| `track-job.js` | Entrypoint |
+| `lib/` | LLM, Notion, resume pipeline |
+| `resume/` | Master profile source |
+| `output/` | Generated tailored bundles |
+| `docs/` | CV rubric, checklists, evaluation notes |
 
 ## Prerequisites
 
@@ -11,6 +43,8 @@ CV quality standards and the validation rubric live in **[docs/cv-best-practices
 - An API key for either **OpenAI** or **Anthropic**
 
 ## Install
+
+From the **repo root**:
 
 ```bash
 cd job-tracker
@@ -129,34 +163,65 @@ Generated files go under **`output/<date>_<company-slug>_<role-slug>/`** as **`t
 
 ## Usage
 
-Run from the project directory so `.env.local` is found.
+Run from the **project directory** so `.env.local` is found.
 
-### Paste from clipboard (macOS)
+### How to pass job text
 
-```bash
-pbpaste | node track-job.js
-```
-
-### Pipe any text
-
-```bash
-cat job.txt | node track-job.js
-```
-
-### Inline job text
+**Inline:**
 
 ```bash
 node track-job.js "Senior Engineer at ExampleCo — we use TypeScript, Postgres..."
 ```
 
-### What happens
+**From clipboard (macOS):**
 
-1. The script sends the text to the configured LLM and parses JSON: position, company, industry, notes, and `studyThemes` (technical interview prep topics).
-2. It prints a preview in the terminal.
-3. It asks **`Save to Notion? [Y/n]`** (Enter or **y** / **yes** = save).  
-   - If you **piped** input (e.g. `pbpaste | ...`), the prompt still works by reading from your terminal (`/dev/tty`).
-4. On **yes**, it creates a new page in the database with **Application Status** set to **Applied** (or `NOTION_STATUS_APPLIED`) and **Applied** set to **today**.
-5. It asks **`Generate tailored resume (Markdown + DOCX)? [Y/n]`** unless `GENERATE_RESUME` is `always` or `never`. On **yes**, it may print **soft profile warnings** (e.g. missing `## Summary`, few metrics). If `PROFILE_GAP_CHECK` is not `never`, it can ask to run an optional **profile gap** step (one LLM call) that lists honest job-vs-profile gaps and suggested questions. That list is **read-only in the terminal** — you do not type answers there; you add anything true to `resume/master-profile.md` (or `MASTER_PROFILE_PATH`) in an editor, then choose whether to continue tailoring or stop and re-run after editing. Then it runs a tailoring LLM pass (profile + job text), prints **quality scores** (ATS, relevance, grounding, tone, clarity) and warnings, may run **one automatic revision** if `RESUME_AUTO_REVISE=1` (default) and validation suggests it, then writes **`tailored-resume.md`** and **`tailored-resume.docx`** under **`RESUME_OUTPUT_DIR`**. Severe grounding issues fail before export.
+```bash
+pbpaste | node track-job.js
+```
+
+**From clipboard (Windows PowerShell):**
+
+```bash
+Get-Clipboard -Raw | node track-job.js
+```
+
+**From clipboard (Linux):**
+
+```bash
+xclip -selection clipboard -o | node track-job.js
+# or (Wayland)
+wl-paste | node track-job.js
+```
+
+**From a file:**
+
+```bash
+cat job.txt | node track-job.js
+```
+
+> **Interactive prompts when piping:** When job text is piped (e.g. clipboard), the script reads prompts from your terminal via `/dev/tty`. This works on **macOS and Linux**. On **native Windows** shells, piped stdin + prompts can behave differently; if prompts fail, use inline job text (`node track-job.js "..."`) or pipe from a file, or run under WSL for Unix TTY behavior.
+
+### End-to-end flow
+
+```mermaid
+flowchart LR
+    A[Job text] --> B[Extract]
+    B --> C[Preview]
+    C --> D["Save to Notion? [Y/n]"]
+    D --> E{Yes?}
+    E -->|Yes| F[Create DB page]
+    E -->|No| G["Generate resume? [Y/n]"]
+    F --> G
+    G --> H{Tailor?}
+    H -->|Yes| I[Profile gap check]
+    I --> J[Tailor + validate]
+    J --> K[Write .md + .docx]
+```
+
+1. **Extract** — The script sends the text to the configured LLM and parses JSON: position, company, industry, notes, and `studyThemes` (technical interview prep topics).
+2. **Preview** — It prints the extracted fields in the terminal.
+3. **Save to Notion?** — Enter or **y** / **yes** = save. Answering **n** skips the Notion API; the script **still continues** to the resume prompt.
+4. **Generate tailored resume?** — Unless `GENERATE_RESUME` is `always` or `never`, it asks. On **yes**, it may print **soft profile warnings** (e.g. missing `## Summary`, few metrics). If `PROFILE_GAP_CHECK` is not `never`, it can ask to run an optional **profile gap** step (one LLM call) that lists honest job-vs-profile gaps and suggested questions. That list is **read-only in the terminal** — you do not type answers there; you add anything true to `resume/master-profile.md` (or `MASTER_PROFILE_PATH`) in an editor, then choose whether to continue tailoring or stop and re-run after editing. Then it runs a tailoring LLM pass (profile + job text), prints **quality scores** (ATS, relevance, grounding, tone, clarity) and warnings, may run **one automatic revision** if `RESUME_AUTO_REVISE=1` (default) and validation suggests it, then writes **`tailored-resume.md`** and **`tailored-resume.docx`** under **`RESUME_OUTPUT_DIR`**. Severe grounding issues fail before export.
 
 ### Non-interactive resume generation
 
@@ -165,6 +230,14 @@ GENERATE_RESUME=1 pbpaste | node track-job.js
 ```
 
 You will still get the Notion **`[Y/n]`** prompt unless you answer **n** (or **no**); set `GENERATE_RESUME=1` so resume generation runs without asking. To skip the optional profile-gap prompt as well, set **`PROFILE_GAP_CHECK=never`** (otherwise the script may still ask on your terminal via `/dev/tty`).
+
+### Common workflows
+
+| Goal | Approach |
+|------|----------|
+| **Track only** (no resume) | Run as usual; answer **n** to "Generate tailored resume?" Or set `GENERATE_RESUME=never`. |
+| **Resume only** (skip Notion) | Run as usual; answer **n** to "Save to Notion?" Resume prompt still appears. |
+| **Non-interactive / CI** | `GENERATE_RESUME=1 PROFILE_GAP_CHECK=never`; answer **n** to Notion if piping, or run with inline text and scripted input. |
 
 ## Tips
 
@@ -185,6 +258,7 @@ You will still get the Notion **`[Y/n]`** prompt unless you answer **n** (or **n
 | Tailoring errors / empty experience | Ensure **`## Experience`** has multiple `-` bullets or `###` role blocks (see example profile) |
 | `RESUME_STRICT=1` failures | Review printed scores and warnings; improve the master profile; try `RESUME_AUTO_REVISE=1` (default); or unset strict mode |
 | “Resume validation failed” / blocking | Remove unsupported metrics, align wording with the profile, or shorten claims flagged as low-overlap |
+| Prompts don't appear when piping (Windows) | Use inline text: `node track-job.js "job text"`, or pipe from file, or run under WSL |
 
 ## License
 
