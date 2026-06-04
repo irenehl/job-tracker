@@ -16,3 +16,8 @@ output/*
 
 resume/master-profile.md
 
+gmail-token.json
+
+logs/*
+!logs/.gitkeep
+

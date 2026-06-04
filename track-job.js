@@ -4,9 +4,10 @@ require("dotenv").config({ path: ".env.local", override: true });
 const path = require("path");
 const { getProvider } = require("./lib/llm");
 const { extractJobData } = require("./lib/job-extraction");
+const { scoreJob } = require("./lib/job-scoring");
 const { readStdin, ask, isAffirmative } = require("./lib/cli-prompts");
-const { saveToNotion } = require("./lib/notion");
-const { loadMasterProfile, validateMasterProfile } = require("./lib/profile-loader");
+const { upsertJobPage, isNotionConfigured } = require("./lib/notion");
+const { loadMasterProfile, loadProfileContext, validateMasterProfile } = require("./lib/profile-loader");
 const { suggestProfileGaps } = require("./lib/profile-gaps");
 const { tailorResume, reviseTailoredResume } = require("./lib/resume-tailor");
 const {
@@ -16,6 +17,13 @@ const {
 } = require("./lib/resume-validator");
 const { writeTailoredResumeArtifacts } = require("./lib/resume-export");
 const { buildOutputSubdir } = require("./lib/path-utils");
+const { fetchJobFromUrl } = require("./lib/fetch-job-url");
+const {
+  generateCoverLetter,
+  generateWhyFit,
+  generateFormAnswers,
+  writeApplicationPacketFiles,
+} = require("./lib/cover-letter");
 const {
   red,
   yellow,
@@ -29,8 +37,35 @@ const {
 
 getProvider();
 
+function parseCliArgs(argv) {
+  const args = argv.slice(2);
+  let url = null;
+  const positional = [];
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--url" && args[i + 1]) {
+      url = args[i + 1];
+      i++;
+    } else {
+      positional.push(args[i]);
+    }
+  }
+
+  return {
+    url,
+    inlineText: positional.length ? positional.join(" ") : null,
+  };
+}
+
 function getGenerateResumeMode() {
   const v = (process.env.GENERATE_RESUME || "prompt").trim().toLowerCase();
+  if (v === "1" || v === "yes" || v === "always" || v === "y") return "always";
+  if (v === "0" || v === "no" || v === "never" || v === "n") return "never";
+  return "prompt";
+}
+
+function getGeneratePacketMode() {
+  const v = (process.env.GENERATE_PACKET || "prompt").trim().toLowerCase();
   if (v === "1" || v === "yes" || v === "always" || v === "y") return "always";
   if (v === "0" || v === "no" || v === "never" || v === "n") return "never";
   return "prompt";
@@ -122,7 +157,53 @@ function printValidationReport(validation, label) {
   }
 }
 
-async function maybeGenerateResume(jobText, extracted) {
+async function maybeGenerateApplicationPacket({
+  jobText,
+  extracted,
+  profileMarkdown,
+  preferencesMarkdown,
+  outDir,
+}) {
+  const mode = getGeneratePacketMode();
+  let want = false;
+  if (mode === "always") want = true;
+  else if (mode === "never") want = false;
+  else {
+    const a = await ask("Generate application packet (cover, why-fit, form answers)? [Y/n] ");
+    want = isAffirmative(a);
+  }
+
+  if (!want) {
+    console.log("(Application packet skipped.)");
+    return null;
+  }
+
+  console.log("\nGenerating application packet...\n");
+  const [coverLetter, whyFit, formAnswers] = await Promise.all([
+    generateCoverLetter({
+      jobText,
+      profileMarkdown,
+      preferencesMarkdown,
+      extracted,
+    }),
+    generateWhyFit({ jobText, profileMarkdown, extracted }),
+    generateFormAnswers({ jobText, profileMarkdown, preferencesMarkdown }),
+  ]);
+
+  const paths = await writeApplicationPacketFiles(outDir, {
+    coverLetter,
+    whyFit,
+    formAnswers,
+  });
+
+  console.log(green("Wrote application packet:"));
+  console.log(`  ${cyan(paths.coverPath)}`);
+  console.log(`  ${cyan(paths.whyPath)}`);
+  console.log(`  ${cyan(paths.formPath)}`);
+  return paths;
+}
+
+async function maybeGenerateResume(jobText, extracted, profileCtx) {
   const mode = getGenerateResumeMode();
   let want = false;
   if (mode === "always") want = true;
@@ -134,12 +215,10 @@ async function maybeGenerateResume(jobText, extracted) {
 
   if (!want) {
     console.log("(Resume generation skipped.)");
-    return;
+    return null;
   }
 
-  const profilePath =
-    process.env.MASTER_PROFILE_PATH || path.join("resume", "master-profile.md");
-  const { raw: profileMarkdown, absolutePath } = loadMasterProfile(profilePath);
+  const { profileMarkdown, preferencesMarkdown, absolutePath } = profileCtx;
 
   const profileCheck = validateMasterProfile(profileMarkdown);
   if (!profileCheck.ok) {
@@ -170,7 +249,7 @@ async function maybeGenerateResume(jobText, extracted) {
     const cont = await ask("Continue with tailoring? [Y/n] ");
     if (!isAffirmative(cont)) {
       console.log("(Tailoring skipped after profile gap analysis.)");
-      return;
+      return null;
     }
   }
 
@@ -227,16 +306,37 @@ async function maybeGenerateResume(jobText, extracted) {
   console.log(green("Wrote tailored resume:"));
   console.log(`  ${cyan(mdPath)}`);
   console.log(`  ${cyan(docxPath)}`);
+
+  await maybeGenerateApplicationPacket({
+    jobText,
+    extracted,
+    profileMarkdown,
+    preferencesMarkdown,
+    outDir,
+  });
+
+  return outDir;
 }
 
 async function main() {
-  let jobText = process.argv[2];
+  const { url, inlineText } = parseCliArgs(process.argv);
+  let jobText = inlineText;
+  let applicationUrl = url || null;
+  let source = "paste";
+
+  if (url) {
+    console.log(`\nFetching job from URL...\n`);
+    const fetched = await fetchJobFromUrl(url);
+    jobText = fetched.jobText;
+    applicationUrl = fetched.meta?.url || url;
+    source = fetched.meta?.source || "paste";
+  }
 
   if (!jobText) {
     if (process.stdin.isTTY) {
       console.error(
         red(
-          "Usage: node track-job.js \"job text\" OR pbpaste | node track-job.js"
+          'Usage: node track-job.js "job text" | pbpaste | node track-job.js | node track-job.js --url "https://..."'
         )
       );
       process.exit(1);
@@ -255,6 +355,17 @@ async function main() {
     );
   }
 
+  const profilePath =
+    process.env.MASTER_PROFILE_PATH || path.join("resume", "master-profile.md");
+  let profileCtx = { profileMarkdown: "", preferencesMarkdown: "", absolutePath: profilePath };
+  try {
+    profileCtx = loadProfileContext(profilePath);
+  } catch {
+    console.log(
+      yellow("No master profile — scoring will use job text only. Add resume/master-profile.md for better results.\n")
+    );
+  }
+
   console.log("\nExtracting job data...\n");
   const data = await extractJobData(jobText);
 
@@ -262,6 +373,23 @@ async function main() {
   console.log("Company:  ", data.company);
   console.log("Industry: ", data.industry);
   console.log("Notes:    ", data.notes);
+
+  let scoring = null;
+  if (profileCtx.profileMarkdown) {
+    console.log("\nScoring fit...\n");
+    scoring = await scoreJob({
+      jobText,
+      profileMarkdown: profileCtx.profileMarkdown,
+      preferencesMarkdown: profileCtx.preferencesMarkdown,
+      extracted: data,
+    });
+    console.log(`Match: ${scoring.match}  Score: ${scoring.score}`);
+    if (scoring.reasons.length) {
+      scoring.reasons.forEach((r) => console.log(`  • ${r}`));
+    }
+    console.log();
+  }
+
   console.log("Study themes:");
   if (data.studyThemes.length === 0) {
     console.log("  (none suggested)");
@@ -272,16 +400,53 @@ async function main() {
   }
   console.log();
 
-  const answer = await ask("Save to Notion? [Y/n] ");
+  let packetFolder = null;
 
-  if (isAffirmative(answer)) {
-    const pageId = await saveToNotion(data);
-    console.log(`\n${green("Saved to Notion.")} ${cyan("Page ID:")} ${cyan(pageId)}`);
+  if (isNotionConfigured()) {
+    const { pageId, created } = await upsertJobPage({
+      position: data.position,
+      company: data.company,
+      industry: data.industry,
+      notes: data.notes,
+      studyThemes: data.studyThemes,
+      applicationUrl,
+      source,
+      score: scoring?.score,
+      match: scoring?.match,
+      matchReasons: scoring?.matchReasons,
+      applicationStatus: process.env.NOTION_STATUS_APPLIED || "Applied",
+    });
+    console.log(
+      `\n${green(created ? "Saved to Notion." : "Updated Notion page.")} ${cyan("Page ID:")} ${cyan(pageId)}`
+    );
   } else {
-    console.log("Skipped Notion save.");
+    console.log(
+      `${yellow("Notion:")} skipped (set NOTION_API_KEY and NOTION_DATABASE_ID in .env.local).\n`
+    );
   }
 
-  await maybeGenerateResume(jobText, data);
+  const outDir = await maybeGenerateResume(jobText, data, profileCtx);
+
+  if (outDir && isNotionConfigured()) {
+    packetFolder = outDir;
+    if (applicationUrl) {
+      await upsertJobPage({
+        position: data.position,
+        company: data.company,
+        industry: data.industry,
+        notes: data.notes,
+        studyThemes: data.studyThemes,
+        applicationUrl,
+        source,
+        score: scoring?.score,
+        match: scoring?.match,
+        matchReasons: scoring?.matchReasons,
+        applicationStatus: process.env.NOTION_STATUS_APPLIED || "Applied",
+        packetFolder: outDir,
+      });
+      console.log(`\n${green("Updated Notion with packet folder:")} ${cyan(outDir)}`);
+    }
+  }
 }
 
 main().catch((err) => {

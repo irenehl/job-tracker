@@ -46,3 +46,11 @@ Practices: Git, unit tests, CI/CD basics, Docker
 ### AWS Certified Developer – Associate — 2023-11
 
 - Optional section; include only credentials you actually hold.
+
+## Preferences
+
+- Target roles: Software Engineer, Backend Engineer
+- Remote: yes (US time zones preferred)
+- Salary min: (your number)
+- Dealbreakers: on-site only, unpaid take-home > 4h
+- Cover letter tone: direct, no fluff, no "excited to apply"

@@ -4,6 +4,16 @@
   "description": "",
   "main": "track-job.js",
   "scripts": {
+    "track": "node track-job.js",
+    "ingest": "node ingest-jobs.js",
+    "inbox": "node check-inbox.js",
+    "copilot": "node run-copilot.js",
+    "copilot:once": "node run-copilot.js --once",
+    "packet:once": "node run-copilot.js --packet-only",
+    "apply:dry": "node apply-job.js",
+    "test:resolve-url": "node scripts/test-resolve-apply-url.js",
+    "backfill:apply-urls": "node scripts/backfill-apply-urls.js --dry-run",
+    "backfill:apply-urls:live": "node scripts/backfill-apply-urls.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -15,6 +25,7 @@
     "@notionhq/client": "^5.13.0",
     "docx": "^9.6.1",
     "dotenv": "^17.3.1",
+    "googleapis": "^171.4.0",
     "openai": "^6.32.0",
     "picocolors": "^1.1.1"
   }

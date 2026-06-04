@@ -30,8 +30,11 @@ CV quality standards and the validation rubric live in **[docs/cv-best-practices
 
 | Path | Purpose |
 |------|---------|
-| `track-job.js` | Entrypoint |
-| `lib/` | LLM, Notion, resume pipeline |
+| `track-job.js` | Paste or URL → extract, score, Notion, resume + packet (manual) |
+| `run-copilot.js` | **Daemon automático** — ingest, scrape, auto-packet, inbox |
+| `ingest-jobs.js` | One-shot ingest (same pipeline as copilot) |
+| `check-inbox.js` | Gmail → brief (+ optional Notion notes) |
+| `lib/` | LLM, Notion, resume pipeline, connectors |
 | `resume/` | Master profile source |
 | `output/` | Generated tailored bundles |
 | `docs/` | CV rubric, checklists, evaluation notes |
@@ -101,9 +104,38 @@ The script expects these properties **with these exact names and types** (names 
 | **Industry**        | Select     | The model picks a short label; add options that match what you expect, or add new options in Notion as needed |
 | **Application Status** | **Status** | Must include a status named **`Applied`** (or set `NOTION_STATUS_APPLIED` to match your option) |
 | **Applied**         | Date       | Set to today when saved |
-| **Application Link**| URL        | Left empty by the script (fill in Notion if you want) |
+| **Application Link**| URL        | Job posting URL (set by ingest or `track-job --url`) |
 | **Notes**           | Rich text  | Short summary from the model |
 | **Study themes**    | Rich text  | Bullet list of prep topics (rename in Notion? Set `NOTION_PROPERTY_STUDY_THEMES` to match) |
+
+### Copilot properties (add once in Notion)
+
+| Property | Type | Notes |
+|----------|------|--------|
+| **Score** | Number | 0–100 from LLM scoring |
+| **Match** | Select | Options: `Apply`, `Maybe`, `Skip` |
+| **Source** | Select | `paste`, `greenhouse`, `lever`, `ashby` |
+| **Match reasons** | Rich text | Why Apply/Maybe/Skip |
+| **Packet folder** | Rich text | Local path to `output/...` after tailoring |
+
+Extend **Application Status** with: `Discovered`, `Packet ready`, `Maybe`, `Skip`, `Interview`, `Rejected` (keep `Applied`). Ingest uses `Discovered`; copilot uses `Packet ready` when CV/cover are generated; `track-job` uses `Applied`.
+
+## Automatización (recomendado)
+
+Deja el copiloto corriendo sin que estés en la terminal:
+
+```bash
+npm run copilot          # daemon 24/7
+npm run copilot:once     # un ciclo (cron / launchd)
+```
+
+Por defecto busca en **Himalayas + RemoteOK** (sin configurar boards). Añade `GREENHOUSE_BOARDS`, `RSS_URLS`, `SCRAPE_URLS` según necesites.
+
+- Ofertas fuertes → Notion + carpeta en `output/` con resume y cover.
+- Gmail → brief en `logs/copilot.log` y (con `COPILOT_NOTIFY=1`) notificación macOS.
+- Tú solo abres Notion, filtras **Packet ready**, y envías la postulación.
+
+Guía completa: **[docs/automation.md](docs/automation.md)** (launchd, variables, intervención mínima).
 
 ## Configuration
 
@@ -157,7 +189,8 @@ The script expects these properties **with these exact names and types** (names 
 2. Use Markdown sections **`## Summary`**, **`## Experience`**, **`## Skills`**, and **`## Education`** (the script checks that at least two of these exist, that the file is not trivially short, and that **`## Experience`** has at least two substantive lines such as `### Role` entries or `-` bullets).
 3. **Facts-only source of truth:** the model may only rearrange, shorten, and rephrase what you put here. Include **concrete outcomes** (metrics, scale, tech stack) *in this file* if you want them on tailored CVs—the validator compares numbers and wording to the profile.
 4. Optional sections you can add for richer tailoring: **`## Projects`**, **`## Certifications`** (body text is still sent to the model as part of the profile; keep using standard `##` headings so nothing is lost in paste).
-5. See **[docs/cv-best-practices.md](docs/cv-best-practices.md)** for how bullets and ATS alignment should read.
+5. Add **`## Preferences`** for job scoring and cover letters (target roles, remote, salary min, dealbreakers, tone). See the example profile.
+6. See **[docs/cv-best-practices.md](docs/cv-best-practices.md)** for how bullets and ATS alignment should read.
 
 Generated files go under **`output/<date>_<company-slug>_<role-slug>/`** as **`tailored-resume.md`** and **`tailored-resume.docx`** (single-column, standard headings for ATS uploads). Body text uses **plain ASCII hyphens** (`-`) for role/company/date separators and list lines—no em dash, en dash, or Word bullet glyphs. The **DOCX header** is four lines when complete: **name**, fixed **Software Engineer**, **location** (from `contactLine`), then **email + profile links** with middle dots (no phone in the header).
 
@@ -198,6 +231,33 @@ wl-paste | node track-job.js
 ```bash
 cat job.txt | node track-job.js
 ```
+
+**From a job URL (Greenhouse / Lever / Ashby):**
+
+```bash
+node track-job.js --url "https://boards.greenhouse.io/company/jobs/123456"
+```
+
+### Batch ingest (ATS → Notion)
+
+Set board names in `.env.local`, then:
+
+```bash
+node ingest-jobs.js
+node ingest-jobs.js --board stripe
+```
+
+Review scored jobs in Notion (filter by **Match** = Apply). No duplicate URLs.
+
+### Inbox briefs (Gmail)
+
+1. Create a Google Cloud OAuth client (Desktop app), enable Gmail API.
+2. Set `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET` in `.env.local`.
+3. Run `node check-inbox.js --oauth`, open the URL, authorize, then `node check-inbox.js --oauth --code YOUR_CODE`.
+4. Copy `refresh_token` from `gmail-token.json` into `GMAIL_REFRESH_TOKEN` (or keep the token file).
+5. Run `node check-inbox.js` or `node check-inbox.js --watch`.
+
+Set `INBOX_APPEND_NOTION=1` to append brief summaries to matched Notion pages.
 
 > **Interactive prompts when piping:** When job text is piped (e.g. clipboard), the script reads prompts from your terminal via `/dev/tty`. This works on **macOS and Linux**. On **native Windows** shells, piped stdin + prompts can behave differently; if prompts fail, use inline job text (`node track-job.js "..."`) or pipe from a file, or run under WSL for Unix TTY behavior.
 
