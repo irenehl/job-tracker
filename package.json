@@ -12,9 +12,11 @@
     "packet:once": "node run-copilot.js --packet-only",
     "apply:dry": "node apply-job.js",
     "test:resolve-url": "node scripts/test-resolve-apply-url.js",
+    "test:json-parse": "node scripts/test-json-parse.js",
+    "test:greenhouse": "node scripts/test-greenhouse-connector.js",
     "backfill:apply-urls": "node scripts/backfill-apply-urls.js --dry-run",
     "backfill:apply-urls:live": "node scripts/backfill-apply-urls.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "npm run test:resolve-url && npm run test:json-parse && npm run test:greenhouse"
   },
   "keywords": [],
   "author": "",
