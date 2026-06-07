@@ -23,7 +23,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.80.0",
+    "@anthropic-ai/sdk": "^0.102.0",
     "@notionhq/client": "^5.13.0",
     "docx": "^9.6.1",
     "dotenv": "^17.3.1",
